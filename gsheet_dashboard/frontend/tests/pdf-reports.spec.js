@@ -62,3 +62,39 @@ test('batch report import, source switching, daily publication and capacity view
   expect(requests).toContain('2026-10-01');expect(requests).toContain('tracker');
   expect(errors).toEqual([]);
 });
+
+test('local import explains manual publication and shows errors only after a publishing attempt',async({page})=>{
+  const fixture=workspaceFixture(1);
+  let settings={mode:'tracker',row_count:0,files:[],enabled:true};
+  let publishCalls=0;
+  await page.route('**/api/**',route=>{
+    const name=new URL(route.request().url()).pathname;
+    let body=fixture.response(name);
+    if(name==='/api/report-workspace') body=settings;
+    if(name==='/api/state') body={...body,report_workspace:settings};
+    if(name==='/api/report-import'){
+      settings={...settings,mode:'excel',row_count:1};
+      body={...settings,publication:{synced:false,queued:false,manual_only:true}};
+    }
+    if(name==='/api/report-publish'){
+      publishCalls++;
+      const error='Connect your Google Sheets service account.';
+      settings={...settings,publication_state:'error',sync_error:error};
+      body={synced:false,sync_error:error};
+    }
+    return route.fulfill({json:body});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Import files',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'Import Excel reports'});
+  await dialog.getByLabel('Excel or CSV files').setInputFiles({
+    name:'local.csv',mimeType:'text/csv',buffer:Buffer.from('Order Number,Status,Product\n1,Cancelled,Update')
+  });
+  await dialog.getByRole('button',{name:'Import and update reports'}).click();
+  await expect(dialog.getByText('Report saved locally. Select Publish current report to update Google Sheets.',{exact:true})).toBeVisible();
+  await expect(dialog.getByRole('heading',{name:'Saved files: 1 order rows'})).toBeVisible();
+  expect(publishCalls).toBe(0);
+  await dialog.getByRole('button',{name:'Publish current report'}).click();
+  await expect(dialog.getByText('Report saved locally. Google Sheets update needs retry: Connect your Google Sheets service account.',{exact:true})).toBeVisible();
+  expect(publishCalls).toBe(1);
+});

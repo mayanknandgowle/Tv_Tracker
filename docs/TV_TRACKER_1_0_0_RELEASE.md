@@ -6,3 +6,7 @@ First release of Tv Tracker Workspace in this repository, built from upstream `t
 - Windows workspace for TitleVision queue capture, Google Sheets sync, SLA analysis, and production reports.
 - Independent Windows profile and update feed. For an existing upstream installation, transfer workspace data through backup and restore and configure connections in the new app.
 - Tracker templates contain column headers. Connect your existing Sheets for live production data.
+
+## Excel import message
+
+Excel and CSV imports now confirm that the report was saved locally and point to **Publish current report** for Google Sheets. A failed publishing attempt displays the error or a retry instruction when no details are available.

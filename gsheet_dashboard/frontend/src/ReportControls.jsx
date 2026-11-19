@@ -3,6 +3,12 @@ import {Upload} from 'lucide-react';
 import {Dialog} from './DesktopExperience';
 import {api} from './workspaceUtils';
 
+function publicationFailure(error) {
+  return error
+    ? `Report saved locally. Google Sheets update needs retry: ${error}`
+    : 'Report saved locally. Select Publish current report to retry the Google Sheets update.';
+}
+
 export default function ReportControls({mode, running, open, setOpen, onChanged, onBusy, workspaceState}) {
   const [settings,setSettings]=useState({}),[files,setFiles]=useState([]),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[replaceAll,setReplaceAll]=useState(false);
   const [dragging,setDragging]=useState(false);
@@ -17,7 +23,7 @@ export default function ReportControls({mode, running, open, setOpen, onChanged,
   useEffect(()=>{api('/api/report-workspace').then(setSettings).catch(e=>setMessage(e.message));},[open]);
   useEffect(()=>{if(workspaceState)setSettings(workspaceState);},[workspaceState]);
   useEffect(()=>{if(!open)return;const timer=setInterval(()=>api('/api/report-workspace').then(setSettings).catch(()=>{}),2000);return()=>clearInterval(timer);},[open]);
-  useEffect(()=>{if(settings.publication_state==='synced')setMessage('Google Sheets reports updated.');if(settings.publication_state==='error')setMessage(`Report saved locally. Sheets update needs retry: ${settings.sync_error}`);},[settings.publication_state,settings.sync_error]);
+  useEffect(()=>{if(settings.publication_state==='synced')setMessage('Google Sheets reports updated.');if(settings.publication_state==='error')setMessage(publicationFailure(settings.sync_error));},[settings.publication_state,settings.sync_error]);
   async function apply(path, options) {
     setBusy(true);onBusy?.(true);setMessage('');
     try {
@@ -26,7 +32,12 @@ export default function ReportControls({mode, running, open, setOpen, onChanged,
       await onChanged(next);
       const publication=result.publication||result;
       const replaced=result.replaced_files?.length?`Replaced ${result.replaced_files.join(', ')}. `:'';
-      setMessage(replaced+(publication.queued?'Report saved locally. Google Sheets update is queued.':publication.synced?'Reports saved and Google Sheets updated.':`Report saved locally. Google Sheets update needs retry: ${publication.sync_error||next.sync_error}`));
+      let status;
+      if(publication.queued) status='Report saved locally. Google Sheets update is queued.';
+      else if(publication.synced) status='Reports saved and Google Sheets updated.';
+      else if(publication.manual_only) status='Report saved locally. Select Publish current report to update Google Sheets.';
+      else status=publicationFailure(publication.sync_error||next.sync_error);
+      setMessage(replaced+status);
       setFiles([]);setReplaceAll(false);
     } catch(e) {setMessage(e.message);} finally {setBusy(false);onBusy?.(false);}
   }
@@ -61,7 +72,7 @@ export default function ReportControls({mode, running, open, setOpen, onChanged,
         </div>
         {!!files.length&&<ul className="report-upload-list">{files.map((file,index)=><li key={`${file.name}-${index}`}><span>{file.name}</span><button className="secondary" disabled={busy} onClick={()=>setFiles(current=>current.filter((_,i)=>i!==index))}>Remove selection</button></li>)}</ul>}
         {!!settings.row_count&&<label className="slicer-item report-replace-all"><input type="checkbox" checked={replaceAll} disabled={busy} onChange={e=>setReplaceAll(e.target.checked)}/>Replace all saved files with this upload</label>}
-        <p>Importing selects the Excel report for all dashboards and publishes it to Google Sheets. Tracker report restores your tracker data. The Sheet includes eight report tabs, including SLA Status; source/history tabs are kept hidden for recovery.</p>
+        <p>Importing selects the Excel report for all dashboards. Select Publish current report to update Google Sheets. Tracker report restores your tracker data. The Sheet includes eight report tabs, including SLA Status; source/history tabs are kept hidden for recovery.</p>
         <div className="monthly-actions"><button className="primary" disabled={busy||!files.length} onClick={upload}>{busy?'Updating reports…':'Import and update reports'}</button><button className="secondary" disabled={busy} onClick={()=>apply('/api/report-publish',{method:'POST'})}>Publish current report</button></div>
         {settings.row_count>0&&<><div className="section-heading"><h3>Saved files: {settings.row_count.toLocaleString()} order rows</h3><button className="secondary" disabled={busy} onClick={()=>apply('/api/report-remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({all:true})})}>Remove all files</button></div><p className="muted">Rows with Order Numbers: {(settings.input_row_count||settings.row_count).toLocaleString()} · Repeated within workbooks: {(settings.duplicate_row_count||0).toLocaleString()}. {settings.row_diagnostics_available?`Worksheet rows with data: ${settings.worksheet_data_rows.toLocaleString()} · Rows skipped without an Order Number: ${settings.missing_order_number_rows.toLocaleString()}.`:'Blank Order Number counts were not saved for this earlier import; upload the source files again to check them.'} Every occurrence counts separately, including repeated Order Numbers within the same workbook. Each row uses its own status and Out Time. Full_Search includes only the Full Search file; Remaining_Search includes only the C-O/Update file. Excel column counts can include the header.</p></>}
         {settings.imports?.map(file=><div className="report-saved-file" key={file.name}><div><strong>{file.name}</strong><p>{file.rows.toLocaleString()} source data rows · {(file.orders??file.rows).toLocaleString()} report orders · {file.worksheets} worksheets (headers excluded)</p>{file.legacy&&<p className="muted">Upload the original files together once to manage this older batch as individual files.</p>}</div><button className="secondary" disabled={busy} onClick={()=>apply('/api/report-remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:file.name})})}>Remove file</button></div>)}
