@@ -1,0 +1,250 @@
+// Real Electron lifecycle test. All credentials and captured data below are test fixtures.
+const { _electron: electron } = require('../gsheet_dashboard/frontend/node_modules/playwright');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const {spawn} = require('node:child_process');
+const {once} = require('node:events');
+
+(async()=>{
+  const root=path.resolve(__dirname,'..');
+  const output=path.join(__dirname,'test-output');fs.mkdirSync(output,{recursive:true});
+  const profile=fs.mkdtempSync(path.join(os.tmpdir(),'datatrace-desktop-test-'));
+  const executable=process.env.DESKTOP_EXE || require('electron');
+  const args=process.env.DESKTOP_EXE?[]:[__dirname];
+  const env={...process.env,DATATRACE_TEST_USER_DATA:profile,DATATRACE_DEV_DEPS:path.join(root,'.desktop-build','deps')};
+  delete env.ELECTRON_RUN_AS_NODE;
+  const started=performance.now();
+  let app;
+  let base;
+  const errors=[];
+  try {
+    app=await electron.launch({executablePath:executable,args,env,timeout:60000});
+    const page=await app.firstWindow();
+    page.setDefaultTimeout(30000);
+    page.setDefaultNavigationTimeout(30000);
+    page.on('pageerror',e=>errors.push(e.message));
+    await page.getByRole('heading',{name:'SLA Status',exact:true}).first().waitFor({timeout:30000});
+    assert.equal(await page.title(), 'Tv Tracker');
+    assert.equal(await app.evaluate(({app})=>app.getName()), require('./package.json').build.productName);
+    assert.match((await page.locator('.brand').innerText()).replace(/\s+/g, ' '), /^Tv Tracker(?: Production workspace)?$/);
+    const startupMs=Math.round(performance.now()-started);
+    base=new URL(page.url()).origin;
+    await page.getByRole('link',{name:'Explore sample workspace'}).click();
+    await page.getByRole('heading',{name:'Production overview'}).waitFor();
+    await page.getByRole('link',{name:'Open workspace'}).click();
+    await page.getByRole('heading',{name:'SLA Status',exact:true}).first().waitFor();
+    assert.equal((await fetch(base+'/api/health')).status,401,'unauthenticated API access must fail');
+    const prefs=await app.evaluate(({BrowserWindow})=>{const p=BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences();return {sandbox:p.sandbox,nodeIntegration:p.nodeIntegration,contextIsolation:p.contextIsolation};});
+    assert.deepEqual(prefs,{sandbox:true,nodeIntegration:false,contextIsolation:true});
+    assert.equal(await page.evaluate(()=>typeof window.require),'undefined');
+    const initial=await page.evaluate(()=>window.desktop.getSettings());
+    assert.equal(initial.googleConfigured,false);
+    assert.equal('password' in initial,false);
+    assert.equal('serviceAccount' in initial,false);
+    const updateState=await page.evaluate(()=>window.desktop.getUpdateState());
+    assert.equal(updateState.status,process.env.DESKTOP_EXE?'idle':'unsupported');
+    assert.equal(updateState.currentVersion,require('./package.json').version);
+    await page.getByRole('button',{name:'Settings',exact:true}).click();
+    await page.getByRole('tab',{name:'Updates',exact:true}).click();
+    await page.getByRole('heading',{name:'Tv Tracker updates'}).waitFor();
+    if(process.env.DESKTOP_EXE)assert.equal(await page.getByRole('button',{name:'Check for updates',exact:true}).isEnabled(),true);
+    await page.screenshot({path:path.join(output,'desktop-updates.png')});
+    await page.keyboard.press('Escape');
+    await page.screenshot({path:path.join(output,'desktop-welcome.png')});
+    await page.keyboard.press('Control+k');
+    await page.getByLabel('Find an action').fill('connections');
+    await page.getByLabel('Find an action').press('Enter');
+    await page.getByRole('heading',{name:'Connections & settings'}).waitFor();
+    await page.getByLabel('Spreadsheet URL or ID',{exact:true}).fill('native-fixture-production');
+    await page.getByLabel('Username',{exact:true}).fill('desktop-test-user');
+    await page.getByLabel('Password',{exact:true}).fill('desktop-test-secret-123');
+    await page.screenshot({path:path.join(output,'desktop-settings.png')});
+    await page.getByRole('button',{name:'Save settings',exact:true}).click();
+    await page.waitForURL(url=>url.origin!==base,{timeout:30000});
+    base=new URL(page.url()).origin;
+    await page.getByRole('heading',{name:'SLA Status',exact:true}).first().waitFor();
+    assert.equal(fs.readFileSync(path.join(profile,'settings.vault')).includes('desktop-test-secret-123'),false);
+    const saved=await page.evaluate(()=>window.desktop.getSettings());
+    assert.equal(saved.passwordSet,true);
+    assert.equal(saved.username,'desktop-test-user');
+    // Capture import is separate from the report-workbook import dialog.
+    const importCapture=async(csv)=>{
+      const imported=await page.evaluate(async csv=>{
+        const form=new FormData();
+        form.append('file',new Blob([csv],{type:'text/csv'}),'capture.csv');
+        const response=await fetch('/api/import',{method:'POST',body:form});
+        return {status:response.status,body:await response.json()};
+      },csv);
+      assert.equal(imported.status,201,JSON.stringify(imported.body));
+      await page.reload();
+    };
+    const portalNow=new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Los_Angeles',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date());
+    const portalDay=portalNow.slice(0,10);
+    await importCapture(`Order Number,Task Status,Product,SLA Expiration*,ETA Comments,Arrival Time\nDESKTOP-001,Available,Full Title,1d,Assigned to the abstractor,${portalNow}\n`);
+    await page.getByLabel('SLA preview',{exact:true}).locator('option').filter({hasText:'preview1'}).waitFor({state:'attached',timeout:15000});
+    await page.getByRole('button',{name:'Captures',exact:true}).click();
+    await page.getByRole('button',{name:'Open capture',exact:true}).first().click();
+    await page.getByRole('cell',{name:'DESKTOP-001',exact:true}).first().waitFor();
+    const etaSla=await page.evaluate(()=>fetch('/api/sla-status').then(response=>response.json()));
+    assert.equal(etaSla.rows.find(row=>row['Order Number']==='DESKTOP-001')?.Status,'Assign to ABS');
+    assert.equal(etaSla.as_of,portalDay);
+    assert.equal(etaSla.date_basis,'arrival_time');
+    assert.equal(etaSla.summary.some(row=>['Need to Assign ABS','Completed and Delivered'].includes(row.Status)),false);
+    // Exercise the real packaged UI and engine together. A mocked browser
+    // fixture alone cannot detect packaging an older local application.
+    await page.getByRole('button',{name:'SLA Status',exact:true}).click();
+    await page.getByRole('button',{name:'Add status',exact:true}).waitFor();
+    const search=page.getByLabel('Search SLA Status orders',{exact:true});
+    await search.fill('DESKTOP-001');
+    const searchResults=page.getByRole('region',{name:'SLA Status order search'});
+    await searchResults.getByRole('cell',{name:'DESKTOP-001',exact:true}).first().waitFor();
+    await searchResults.getByRole('cell',{name:'Assign to ABS',exact:true}).waitFor();
+    await search.fill('');
+    await page.getByRole('button',{name:'Add status',exact:true}).click();
+    await page.getByLabel('Status name',{exact:true}).fill('Native review');
+    await page.getByRole('button',{name:'Create status',exact:true}).click();
+    await page.getByRole('button',{name:'Native review, Grand Total: 0 orders',exact:true}).waitFor();
+    await page.getByRole('button',{name:'Add order to status Native review',exact:true}).click();
+    const orderEditor=page.getByRole('dialog',{name:'Add SLA order',exact:true});
+    await orderEditor.getByLabel('SLA Order Number',{exact:true}).fill('DESKTOP-001');
+    await orderEditor.getByLabel('SLA Order Number',{exact:true}).press('Enter');
+    await orderEditor.getByRole('button',{name:'Save order',exact:true}).click();
+    await orderEditor.waitFor({state:'hidden'});
+    const manualSla=await page.evaluate(()=>fetch('/api/sla-status').then(response=>response.json()));
+    assert.equal(manualSla.rows.find(row=>row['Order Number']==='DESKTOP-001')?.Status,'Native review');
+    assert.equal(manualSla.totals['Grand Total'],1,'moving an existing order must preserve the count');
+    await page.getByRole('button',{name:'Filter column Status',exact:true}).waitFor();
+    await page.screenshot({path:path.join(output,'desktop-current-sla-features.png')});
+    const excelImported=await page.evaluate(async()=>{
+      const form=new FormData();
+      form.append('files',new Blob(['Order Number,Status,Product,Date,SLA Expiration\nEXCEL-001,Typing in Progress,Full Title,2026-10-13,2099-12-31 17:00\n'],{type:'text/csv'}),'native-report.csv');
+      const response=await fetch('/api/report-import',{method:'POST',body:form});
+      return {status:response.status,body:await response.json()};
+    });
+    assert.equal(excelImported.status,201,JSON.stringify(excelImported.body));
+    await page.reload();
+    await page.getByRole('button',{name:'SLA Status',exact:true}).click();
+    await page.getByRole('combobox',{name:'SLA report date'}).waitFor();
+    await page.getByRole('button',{name:'Add status',exact:true}).click();
+    await page.getByLabel('Status name',{exact:true}).fill('Excel native review');
+    await page.getByRole('button',{name:'Create status',exact:true}).click();
+    await page.getByRole('button',{name:'Add order to status Excel native review',exact:true}).click();
+    let excelEditor=page.getByRole('dialog',{name:'Add SLA order',exact:true});
+    await excelEditor.getByLabel('SLA Order Number',{exact:true}).fill('EXCEL-001');
+    await excelEditor.getByRole('button',{name:'Look up order',exact:true}).click();
+    await excelEditor.getByRole('button',{name:'Save order',exact:true}).click();
+    await excelEditor.waitFor({state:'hidden'});
+    let excelSla=await page.evaluate(()=>fetch('/api/sla-status').then(response=>response.json()));
+    assert.equal(excelSla.rows[0].Status,'Excel native review');
+    assert.equal(excelSla.totals['Grand Total'],1);
+    await page.getByRole('button',{name:'Add order to status Excel native review',exact:true}).click();
+    excelEditor=page.getByRole('dialog',{name:'Add SLA order',exact:true});
+    await excelEditor.getByLabel('SLA Order Number',{exact:true}).fill('EXCEL-002');
+    await excelEditor.getByRole('button',{name:'Look up order',exact:true}).click();
+    await excelEditor.getByLabel('Product',{exact:true}).fill('Full Title');
+    await excelEditor.getByLabel('SLA Expiration',{exact:true}).fill('2099-12-31T17:00');
+    await excelEditor.getByRole('button',{name:'Add order',exact:true}).click();
+    await excelEditor.waitFor({state:'hidden'});
+    excelSla=await page.evaluate(()=>fetch('/api/sla-status').then(response=>response.json()));
+    assert.equal(excelSla.totals['Grand Total'],2);
+    assert.equal(excelSla.manual_order_count,1);
+    assert.equal(excelSla.rows.find(row=>row['Order Number']==='EXCEL-002')['Arrival Date'],'2026-10-13');
+    await page.screenshot({path:path.join(output,'desktop-excel-sla-features.png')});
+    const excelCapacity=await page.evaluate(()=>fetch('/api/capacity-report').then(response=>response.json()));
+    assert.equal(excelCapacity.source,'Imported Excel');
+    assert.equal(excelCapacity.daily.reduce((sum,row)=>sum+row.Received,0),2);
+    const returnToTracker=await page.evaluate(()=>fetch('/api/report-source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'tracker'})}).then(response=>response.json()));
+    assert.equal(returnToTracker.mode,'tracker');
+    const trackerModeCapacity=await page.evaluate(()=>fetch('/api/capacity-report').then(response=>response.json()));
+    assert.equal(trackerModeCapacity.mode,'excel');
+    assert.deepEqual(trackerModeCapacity.daily,excelCapacity.daily,'capacity must retain its Excel source when other reports switch to Tracker');
+    await page.reload();
+    const state=await page.evaluate(()=>fetch('/api/state').then(r=>r.json()));
+    assert.equal(state.pending_sync,1);
+    const diagnostics=await page.evaluate(()=>fetch('/api/desktop/diagnostics').then(r=>r.json()));
+    assert.equal(diagnostics.format,'tv-tracker-diagnostics');
+    assert.equal(diagnostics.captures,1);
+    assert.equal(JSON.stringify(diagnostics).includes('DESKTOP-001'),false);
+    const darkMode=page.getByRole('switch',{name:'Dark mode',exact:true});
+    await darkMode.waitFor();
+    if(await darkMode.getAttribute('aria-checked')!=='true')await darkMode.click();
+    await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
+    await page.evaluate(()=>window.desktop.savePreferences({orderViews:[{name:'Saved locally',search:'DESKTOP',group:'all',product:'all',filters:{}}],tableLayout:{mode:'custom',hidden:['County'],widths:{'Order Number':240},pinIdentifier:true,wrap:true}}));
+    const backupFile=path.join(profile,'workspace-backup.zip');
+    await app.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file});},backupFile);
+    const backup=await page.evaluate(()=>window.desktop.backup());
+    assert.equal(backup.saved,true);
+    assert.ok(fs.statSync(backupFile).size>100);
+    await importCapture('Order Number,Task Status,Product\nDESKTOP-002,Available,Full Title\n');
+    await page.getByLabel('SLA preview',{exact:true}).locator('option').filter({hasText:'preview2'}).waitFor({state:'attached'});
+    await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});dialog.showMessageBox=async()=>({response:1});},backupFile);
+    const restoredPage=page.waitForEvent('load',{timeout:30000});
+    const restored=await page.evaluate(()=>window.desktop.restoreBackup());
+    assert.equal(restored.restored,true);
+    await restoredPage;
+    await page.getByRole('button',{name:'Captures',exact:true}).click();
+    await page.getByRole('button',{name:'Open capture',exact:true}).first().click();
+    await page.getByRole('cell',{name:'DESKTOP-001',exact:true}).first().waitFor();
+    assert.equal((await page.evaluate(()=>fetch('/api/state').then(r=>r.json()))).previews.length,1);
+    const child=spawn(executable,args,{env,windowsHide:true,stdio:'ignore'});
+    await Promise.race([once(child,'exit'),new Promise((_,reject)=>setTimeout(()=>reject(Error('Second instance did not exit')),15000))]);
+    assert.equal(await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().length),1);
+    const metrics=await app.evaluate(async({app})=>({processes:app.getAppMetrics().length,workingSetMB:Math.round(app.getAppMetrics().reduce((sum,item)=>sum+(item.memory?.workingSetSize||0),0)/1024)}));
+    await page.screenshot({path:path.join(output,'desktop-capture.png')});
+    assert.deepEqual(errors,[],'renderer must not have uncaught errors');
+    let closing=app.waitForEvent('close',{timeout:15000});
+    await app.evaluate(({Menu})=>Menu.getApplicationMenu().items[0].submenu.items.find(item=>item.label==='Quit Tv Tracker').click());
+    await closing;app=null;
+    await assert.rejects(fetch(base+'/api/health'),undefined,'backend must stop on app quit');
+    // Reopen the same user profile to verify persisted settings and capture data.
+    app=await electron.launch({executablePath:executable,args,env,timeout:60000});
+    const reopened=await app.firstWindow();
+    reopened.setDefaultTimeout(30000);
+    await reopened.getByRole('button',{name:'Captures',exact:true}).click();
+    await reopened.getByRole('button',{name:'Open capture',exact:true}).first().click();
+    await reopened.getByRole('cell',{name:'DESKTOP-001',exact:true}).first().waitFor({timeout:15000});
+    assert.equal(await reopened.getByRole('switch',{name:'Dark mode',exact:true}).getAttribute('aria-checked'),'true');
+    assert.equal((await reopened.evaluate(()=>window.desktop.getPreferences())).orderViews[0].name,'Saved locally');
+    assert.equal((await reopened.evaluate(()=>window.desktop.getPreferences())).tableLayout.widths['Order Number'],240);
+    // Exercise the native handoff using the persisted synthetic workbook setting.
+    // No service-account credentials are configured and shell.openExternal is stubbed.
+    const nativeState=await reopened.evaluate(()=>fetch('/api/state').then(r=>r.json()));
+    const sheetUrl=nativeState.sheet_url;
+    assert.equal(new URL(sheetUrl).pathname,'/spreadsheets/d/native-fixture-production/edit');
+    await app.evaluate(({shell})=>{global.testOpenedSheet='';shell.openExternal=async url=>{global.testOpenedSheet=url;};});
+    await reopened.getByRole('button',{name:'Daily Orders',exact:true}).click();
+    const productionLink=reopened.getByTitle('Open the production Google Sheet in your browser',{exact:true});
+    await productionLink.waitFor();
+    assert.equal(await productionLink.getAttribute('href'),sheetUrl);
+    await productionLink.click();
+    assert.equal(await app.evaluate(()=>global.testOpenedSheet),sheetUrl);
+    await reopened.screenshot({path:path.join(output,'desktop-production-link.png')});
+    await new Promise(resolve=>setTimeout(resolve,5000));
+    const idleCpuPercent=await app.evaluate(({app})=>Number(app.getAppMetrics().reduce((sum,item)=>sum+(item.cpu?.percentCPUUsage||0),0).toFixed(2)));
+    assert.equal((await reopened.evaluate(()=>window.desktop.getSettings())).passwordSet,true);
+    closing=app.waitForEvent('close',{timeout:15000});
+    await app.evaluate(({Menu})=>Menu.getApplicationMenu().items[0].submenu.items.find(item=>item.label==='Quit Tv Tracker').click());
+    await closing;app=null;
+    const result={passed:true,packaged:!!process.env.DESKTOP_EXE,startupMs,...metrics,idleElectronCpuPercent:idleCpuPercent,rendererErrors:errors,checks:['first launch','authenticated loopback','renderer isolation','update IPC and settings tab','keyboard navigation','DPAPI vault','settings restart','local import','saved captures','Arrival Time report date and merged ABS assignment','Excel capacity source isolation','SLA order search','manual SLA status creation','manual SLA order move with stable totals','report column filters','Excel manual SLA statuses','Excel workbook order move','Excel manual order creation','backup export','backup restore','single instance','clean shutdown','data persistence','safe diagnostics','theme persistence','table layout persistence','production workbook browser handoff']};
+    fs.writeFileSync(path.join(output,process.env.DESKTOP_EXE?'packaged-smoke.json':'development-smoke.json'),JSON.stringify(result,null,2));
+    console.log(JSON.stringify(result,null,2));
+  } catch(error) {
+    if(app) {
+      const failedPage=await app.firstWindow().catch(()=>null);
+      if(failedPage){console.error((await failedPage.locator('body').innerText().catch(()=>'' )).slice(0,7000));await failedPage.screenshot({path:path.join(output,'desktop-failure.png')}).catch(()=>{});}
+      console.error('Renderer errors:',errors);
+    }
+    throw error;
+  } finally {
+    if(app){
+      try{
+        const closed=app.waitForEvent('close',{timeout:20000});
+        await app.evaluate(({Menu})=>Menu.getApplicationMenu().items[0].submenu.items.find(item=>item.label==='Quit Tv Tracker').click());
+        await closed;
+      }catch{app?.process().kill();}
+    }
+    // Test profiles are kept for failure diagnostics; they contain synthetic data only.
+  }
+})().catch(error=>{console.error(error);process.exitCode=1;});

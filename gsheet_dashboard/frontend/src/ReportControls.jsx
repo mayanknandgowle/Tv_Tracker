@@ -1,0 +1,75 @@
+import React, {useEffect, useRef, useState} from 'react';
+import {Upload} from 'lucide-react';
+import {Dialog} from './DesktopExperience';
+import {api} from './workspaceUtils';
+
+export default function ReportControls({mode, running, open, setOpen, onChanged, onBusy, workspaceState}) {
+  const [settings,setSettings]=useState({}),[files,setFiles]=useState([]),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[replaceAll,setReplaceAll]=useState(false);
+  const [dragging,setDragging]=useState(false);
+  const fileInput=useRef(null),dragDepth=useRef(0);
+  useEffect(()=>{if(!open){dragDepth.current=0;setDragging(false);}},[open]);
+  function chooseFiles(values){
+    if(busy)return;
+    const selected=Array.from(values||[]);
+    if(selected.some(file=>!/\.(xlsx|csv)$/i.test(file.name))){setMessage('Choose Excel (.xlsx) or CSV (.csv) files.');return;}
+    setFiles(selected);setMessage('');
+  }
+  useEffect(()=>{api('/api/report-workspace').then(setSettings).catch(e=>setMessage(e.message));},[open]);
+  useEffect(()=>{if(workspaceState)setSettings(workspaceState);},[workspaceState]);
+  useEffect(()=>{if(!open)return;const timer=setInterval(()=>api('/api/report-workspace').then(setSettings).catch(()=>{}),2000);return()=>clearInterval(timer);},[open]);
+  useEffect(()=>{if(settings.publication_state==='synced')setMessage('Google Sheets reports updated.');if(settings.publication_state==='error')setMessage(`Report saved locally. Sheets update needs retry: ${settings.sync_error}`);},[settings.publication_state,settings.sync_error]);
+  async function apply(path, options) {
+    setBusy(true);onBusy?.(true);setMessage('');
+    try {
+      const result=await api(path,{...options,timeoutMs:180000});
+      const next=await api('/api/report-workspace');setSettings(next);
+      await onChanged(next);
+      const publication=result.publication||result;
+      const replaced=result.replaced_files?.length?`Replaced ${result.replaced_files.join(', ')}. `:'';
+      setMessage(replaced+(publication.queued?'Report saved locally. Google Sheets update is queued.':publication.synced?'Reports saved and Google Sheets updated.':`Report saved locally. Google Sheets update needs retry: ${publication.sync_error||next.sync_error}`));
+      setFiles([]);setReplaceAll(false);
+    } catch(e) {setMessage(e.message);} finally {setBusy(false);onBusy?.(false);}
+  }
+  function choose(value) {
+    if(value==='excel'&&!settings.row_count){setOpen(true);return;}
+    apply('/api/report-source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:value})});
+  }
+  function upload() {
+    const body=new FormData();files.forEach(file=>body.append('files',file));body.append('replace_all',String(replaceAll));
+    apply('/api/report-import',{method:'POST',body});
+  }
+  return <>
+    <div className="report-mode" role="group" aria-label="Report source">
+      <button disabled={busy} className={mode==='tracker'?'active':''} aria-pressed={mode==='tracker'} onClick={()=>choose('tracker')}>Tracker report</button>
+      <button disabled={busy} className={mode==='excel'?'active':''} aria-pressed={mode==='excel'} onClick={()=>choose('excel')}>Import Excel report</button>
+    </div>
+    {(message||settings.sync_error||['pending','working'].includes(settings.publication_state))&&!open&&<button className="text-button" onClick={()=>setOpen(true)} title={message||settings.sync_error}>{settings.sync_error?'Sheets update pending':['pending','working'].includes(settings.publication_state)?'Sheets updating':'Report details'}</button>}
+    {open&&<Dialog title="Import Excel reports" className="report-import-dialog" onClose={()=>{if(!busy)setOpen(false);}}>
+      <div className="dialog-content">
+        <p>Upload one or several workbooks. Every order worksheet and every status is included. Uploading the same filename again replaces its previous rows, including updated statuses and newly added orders. Other saved files are kept.</p>
+        <label className="report-file-label" htmlFor="report-workbook-files">Excel or CSV files</label>
+        <div className={`report-file-dropzone${dragging?' is-dragging':''}`} role="region" aria-label="Excel report upload"
+          onDragEnter={event=>{if(!busy&&Array.from(event.dataTransfer.types||[]).includes('Files')){event.preventDefault();dragDepth.current++;setDragging(true);}}}
+          onDragOver={event=>{if(Array.from(event.dataTransfer.types||[]).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=busy?'none':'copy';}}}
+          onDragLeave={event=>{event.preventDefault();dragDepth.current=Math.max(0,dragDepth.current-1);if(!dragDepth.current)setDragging(false);}}
+          onDrop={event=>{event.preventDefault();dragDepth.current=0;setDragging(false);chooseFiles(event.dataTransfer.files);}}>
+          <input ref={fileInput} id="report-workbook-files" type="file" multiple hidden accept=".xlsx,.csv" disabled={busy}
+            onChange={event=>{chooseFiles(event.target.files);event.target.value='';}}/>
+          <Upload size={25} aria-hidden="true"/>
+          <button type="button" className="secondary report-choose-files" disabled={busy} onClick={()=>fileInput.current?.click()}>Choose files</button>
+          <span role="status">{dragging?'Drop your files here':files.length?`${files.length} file${files.length===1?'':'s'} selected`:'Drag Excel or CSV files here'}</span>
+        </div>
+        {!!files.length&&<ul className="report-upload-list">{files.map((file,index)=><li key={`${file.name}-${index}`}><span>{file.name}</span><button className="secondary" disabled={busy} onClick={()=>setFiles(current=>current.filter((_,i)=>i!==index))}>Remove selection</button></li>)}</ul>}
+        {!!settings.row_count&&<label className="slicer-item report-replace-all"><input type="checkbox" checked={replaceAll} disabled={busy} onChange={e=>setReplaceAll(e.target.checked)}/>Replace all saved files with this upload</label>}
+        <p>Importing selects the Excel report for all dashboards and publishes it to Google Sheets. Tracker report restores your tracker data. The Sheet includes eight report tabs, including SLA Status; source/history tabs are kept hidden for recovery.</p>
+        <div className="monthly-actions"><button className="primary" disabled={busy||!files.length} onClick={upload}>{busy?'Updating reports…':'Import and update reports'}</button><button className="secondary" disabled={busy} onClick={()=>apply('/api/report-publish',{method:'POST'})}>Publish current report</button></div>
+        {settings.row_count>0&&<><div className="section-heading"><h3>Saved files: {settings.row_count.toLocaleString()} order rows</h3><button className="secondary" disabled={busy} onClick={()=>apply('/api/report-remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({all:true})})}>Remove all files</button></div><p className="muted">Rows with Order Numbers: {(settings.input_row_count||settings.row_count).toLocaleString()} · Repeated within workbooks: {(settings.duplicate_row_count||0).toLocaleString()}. {settings.row_diagnostics_available?`Worksheet rows with data: ${settings.worksheet_data_rows.toLocaleString()} · Rows skipped without an Order Number: ${settings.missing_order_number_rows.toLocaleString()}.`:'Blank Order Number counts were not saved for this earlier import; upload the source files again to check them.'} Every occurrence counts separately, including repeated Order Numbers within the same workbook. Each row uses its own status and Out Time. Full_Search includes only the Full Search file; Remaining_Search includes only the C-O/Update file. Excel column counts can include the header.</p></>}
+        {settings.imports?.map(file=><div className="report-saved-file" key={file.name}><div><strong>{file.name}</strong><p>{file.rows.toLocaleString()} source data rows · {(file.orders??file.rows).toLocaleString()} report orders · {file.worksheets} worksheets (headers excluded)</p>{file.legacy&&<p className="muted">Upload the original files together once to manage this older batch as individual files.</p>}</div><button className="secondary" disabled={busy} onClick={()=>apply('/api/report-remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:file.name})})}>Remove file</button></div>)}
+        {settings.files?.map((file,index)=><p className="muted" key={index}>{file.file} / {file.sheet}: {file.rows} rows{file.within_file_duplicates?` / ${file.within_file_duplicates} repeats within this workbook`:''}</p>)}
+        {!!settings.duplicate_order_numbers?.length&&<section className="report-duplicates" aria-label="Duplicate orders"><h3>Repeated Order Numbers within workbooks ({settings.duplicate_order_numbers.length})</h3><p className="muted">All occurrences are included as separate order rows. Each occurrence keeps its own product, status and Out Time. Open Duplicate Orders on Overview to compare worksheet row locations.</p><div className="duplicate-order-numbers">{settings.duplicate_order_numbers.map((number,index)=><code key={`${number}-${index}`}>{number}</code>)}</div></section>}
+        {!settings.row_count&&<p className="muted">No Excel files saved. Select files to create an Excel report.</p>}
+        {message&&<p role="status" className="notice">{message}</p>}
+      </div>
+    </Dialog>}
+  </>;
+}

@@ -1,0 +1,432 @@
+"""Durable numbered captures and task-level snapshot comparison."""
+from collections import Counter
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import shutil
+import sqlite3
+
+import pandas as pd
+
+IGNORED = {'Sync Timestamp', 'Queue Age Hours', 'Time Since Arrival', 'Task Time in Queue'}
+CHANGE_COLUMNS = ['Change', 'Task Key', 'Column', 'Previous Value', 'Latest Value']
+
+
+class PreviewStore:
+    def __init__(self, root):
+        # Local retry cache only. Production reports read Google Sheets.
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        with self.connect() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS previews (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+                       'created TEXT NOT NULL, source TEXT NOT NULL, columns_json TEXT NOT NULL, rows_json TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS sla_corrections ('
+                       'order_number TEXT NOT NULL, completion_date TEXT NOT NULL, '
+                       "status TEXT NOT NULL CHECK (status IN ('On Time', 'Missed')), updated TEXT NOT NULL, "
+                       'PRIMARY KEY (order_number, completion_date))')
+            db.execute('CREATE TABLE IF NOT EXISTS sync_receipts ('
+                       'preview_id INTEGER PRIMARY KEY, report_json TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS sync_jobs (preview_id INTEGER PRIMARY KEY, state TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS sync_reports (preview_id INTEGER PRIMARY KEY, sha256 TEXT NOT NULL, report_json TEXT NOT NULL, committed INTEGER NOT NULL DEFAULT 0)')
+            db.execute('CREATE TABLE IF NOT EXISTS sync_failures (preview_id INTEGER PRIMARY KEY, error TEXT NOT NULL, created TEXT NOT NULL)')
+            # Upgrade v2.0 without re-uploading already committed snapshots.
+            db.execute("INSERT OR IGNORE INTO sync_jobs SELECT preview_id, 'synced' FROM sync_receipts")
+
+
+    @contextmanager
+    def connect(self):
+        connection = sqlite3.connect(self.root / 'previews.sqlite', timeout=30)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    @staticmethod
+    def decode(value):
+        return json.loads(value) if isinstance(value, str) else value
+
+    def save(self, frame, source='DataTrace'):
+        from datatrace_sync import export_to_excel_and_csv
+        frame = frame.copy().fillna('')
+        frame.columns = [str(c).strip() for c in frame.columns]
+        if not len(frame.columns) or frame.columns.duplicated().any() or any(not c for c in frame.columns):
+            raise ValueError('The file must contain unique, nonblank column names.')
+        rows = json.loads(frame.to_json(orient='records', date_format='iso'))
+        created = datetime.now(timezone.utc).isoformat()
+        with self.connect() as db:
+            cursor = db.execute('INSERT INTO previews(created,source,columns_json,rows_json) VALUES(?,?,?,?)',
+                                (created, source, json.dumps(list(frame.columns)), json.dumps(rows)))
+            number = cursor.lastrowid
+            export_to_excel_and_csv(frame, self.root / f'preview{number}')
+        return self.get(number)
+
+    def restore(self, number, columns, rows, source='Google Sheets recovery', created=None):
+        """Recover the last synced numbered preview after ephemeral storage is lost."""
+        if number < 1 or not columns:
+            raise ValueError('A numbered preview with rows is required for recovery.')
+        created = created or datetime.now(timezone.utc).isoformat()
+        with self.connect() as db:
+            db.execute('INSERT OR IGNORE INTO previews(id,created,source,columns_json,rows_json) '
+                       'VALUES(?,?,?,?,?)', (number, created, source, json.dumps(columns), json.dumps(rows)))
+        return self.get(number)
+
+    def list(self):
+        with self.connect() as db:
+            return [{'id': i, 'name': f'preview{i}', 'created': created, 'source': source,
+                     'row_count': count} for i, created, source, count in
+                    db.execute('SELECT id,created,source,json_array_length(rows_json) FROM previews ORDER BY id DESC')]
+
+    def get(self, number):
+        with self.connect() as db:
+            query = 'SELECT created,source,columns_json,rows_json FROM previews WHERE id=' + '?'
+            record = db.execute(query, (number,)).fetchone()
+        if not record:
+            raise KeyError('Preview not found.')
+        return {'id': number, 'name': f'preview{number}', 'created': record[0], 'source': record[1],
+                'columns': self.decode(record[2]), 'rows': self.decode(record[3])}
+
+    def history(self, include_sla_corrections=False):
+        """Read complete history in one transaction for reporting."""
+        with self.connect() as db:
+            records = db.execute('SELECT id,created,source,columns_json,rows_json FROM previews ORDER BY id').fetchall()
+            corrections = ({(number, date): status for number, date, status in
+                            db.execute('SELECT order_number,completion_date,status FROM sla_corrections')}
+                           if include_sla_corrections else None)
+        history = [{'id': number, 'name': f'preview{number}', 'created': created, 'source': source,
+                    'columns': self.decode(columns), 'rows': self.decode(rows)}
+                   for number, created, source, columns, rows in records]
+        return (history, corrections) if include_sla_corrections else history
+
+    def delete(self, number):
+        with self.connect() as db:
+            cursor = db.execute('DELETE FROM previews WHERE id=' + '?', (number,))
+            for table in ('sync_jobs', 'sync_reports', 'sync_failures', 'sync_receipts'):
+                db.execute(f'DELETE FROM {table} WHERE preview_id=?', (number,))
+        if not cursor.rowcount:
+            raise KeyError('Preview not found.')
+        for suffix in ('csv', 'xlsx'):
+            (self.root / f'preview{number}.{suffix}').unlink(missing_ok=True)
+
+    def sla_corrections(self):
+        with self.connect() as db:
+            return {(number, date): status for number, date, status in
+                    db.execute('SELECT order_number,completion_date,status FROM sla_corrections')}
+
+    def save_sla_correction(self, order_number, completion_date, status):
+        self.save_sla_corrections([(order_number, completion_date, status)])
+
+    def save_sla_corrections(self, corrections):
+        """Validate the entire selection, then persist it in one transaction."""
+        records = []
+        updated = datetime.now(timezone.utc).isoformat()
+        for order_number, completion_date, status in corrections:
+            if not order_number or status not in ('On Time', 'Missing', 'Missed'):
+                raise ValueError('An order number and On Time or Missed status are required.')
+            if datetime.strptime(completion_date, '%Y-%m-%d').strftime('%Y-%m-%d') != completion_date:
+                raise ValueError('A valid completion date is required.')
+            records.append((order_number, completion_date, 'Missed' if status == 'Missing' else status, updated))
+        placeholders = '?,?,?,?'
+        with self.connect() as db:
+            db.cursor().executemany('INSERT INTO sla_corrections(order_number,completion_date,status,updated) '
+                                   f'VALUES({placeholders}) ON CONFLICT(order_number,completion_date) '
+                                   'DO UPDATE SET status=excluded.status,updated=excluded.updated', records)
+
+    def mark_synced(self, number, report=None):
+        with self.connect() as db:
+            db.execute("INSERT INTO sync_jobs VALUES(?, 'synced') ON CONFLICT(preview_id) DO UPDATE SET state='synced'", (number,))
+            db.execute('DELETE FROM sync_failures WHERE preview_id=?', (number,))
+            db.execute('INSERT INTO sync_receipts VALUES(?,?) ON CONFLICT(preview_id) DO UPDATE SET report_json=excluded.report_json', (number, json.dumps(report or {})))
+
+    def stage_sync_report(self, number, digest, report):
+        """Keep the report ready before the Google batch, including lost replies."""
+        with self.connect() as db:
+            existing = db.execute('SELECT sha256,committed FROM sync_reports WHERE preview_id=?', (number,)).fetchone()
+            if existing and existing[1] and existing[0] != digest:
+                raise ValueError('A saved preview already has a different sync report.')
+            db.execute('INSERT INTO sync_reports(preview_id,sha256,report_json,committed) VALUES(?,?,?,0) '
+                       'ON CONFLICT(preview_id) DO UPDATE SET sha256=excluded.sha256,report_json=excluded.report_json,committed=0',
+                       (number, digest, json.dumps(report, ensure_ascii=False, default=str)))
+
+    def commit_sync_report(self, number, digest):
+        with self.connect() as db:
+            cursor = db.execute('UPDATE sync_reports SET committed=1 WHERE preview_id=? AND sha256=?', (number, digest))
+            if cursor.rowcount != 1:
+                raise RuntimeError('The local sync report is missing or has a different snapshot hash.')
+
+    def get_sync_report(self, number, include_staged=False):
+        with self.connect() as db:
+            row = db.execute('SELECT sha256,report_json,committed FROM sync_reports WHERE preview_id=?', (number,)).fetchone()
+        if not row or (not include_staged and not row[2]):
+            return None
+        return {'sha256': row[0], 'report': self.decode(row[1]), 'committed': bool(row[2])}
+
+    def latest_sync_report(self):
+        with self.connect() as db:
+            row = db.execute('SELECT preview_id,report_json FROM sync_reports WHERE committed=1 AND preview_id>0 '
+                             'ORDER BY preview_id DESC LIMIT 1').fetchone()
+        return {k: v for k, v in self.decode(row[1]).items() if not k.startswith('_')} if row else {}
+
+    def mark_failed(self, number, error='Automatic sync failed after retries. Preview retained.'):
+        with self.connect() as db:
+            db.execute("INSERT INTO sync_jobs VALUES(?, 'failed') ON CONFLICT(preview_id) DO UPDATE SET state='failed'", (number,))
+            db.execute('INSERT INTO sync_failures VALUES(?,?,?) ON CONFLICT(preview_id) DO UPDATE SET error=excluded.error,created=excluded.created',
+                       (number, str(error), datetime.now(timezone.utc).isoformat()))
+
+    def failed_syncs(self):
+        with self.connect() as db:
+            return [{'preview_id': number, 'preview_name': f'preview{number}', 'error': error, 'created': created}
+                    for number, error, created in db.execute('SELECT preview_id,error,created FROM sync_failures ORDER BY preview_id')]
+
+    def pending_syncs(self):
+        """Automatic retries stop at the first failed capture until explicit retry."""
+        with self.connect() as db:
+            rows = db.execute("SELECT id,state FROM previews LEFT JOIN sync_jobs ON preview_id=id WHERE state IS NULL OR state!='synced' ORDER BY id").fetchall()
+        pending = []
+        for number, state in rows:
+            if state == 'failed':
+                break
+            pending.append(number)
+        return pending
+
+    def unsynced_ids(self):
+        with self.connect() as db:
+            return [row[0] for row in db.execute("SELECT id FROM previews LEFT JOIN sync_jobs ON preview_id=id WHERE state IS NULL OR state!='synced' ORDER BY id")]
+
+    def pending(self):
+        return [self.get(number) for number in self.unsynced_ids()]
+
+    def pending_count(self):
+        with self.connect() as db:
+            return db.execute("SELECT COUNT(*) FROM previews LEFT JOIN sync_jobs ON preview_id=id WHERE state IS NULL OR state!='synced'").fetchone()[0]
+
+    def rebase_unsynced(self, first_id, cloud_max):
+        """Give a conflicting pending suffix fresh numbers, preserving every capture."""
+        copied = []
+        originals = []
+        mapping = {}
+        try:
+            with self.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                pending = [row[0] for row in db.execute(
+                    "SELECT id FROM previews LEFT JOIN sync_jobs ON preview_id=id "
+                    "WHERE id>=? AND (state IS NULL OR state!='synced') ORDER BY id", (first_id,))]
+                if not pending or pending[0] != first_id:
+                    raise ValueError('The conflicting preview is no longer pending. Refresh captures and try again.')
+                if db.execute("SELECT 1 FROM previews JOIN sync_jobs ON preview_id=id "
+                              "WHERE id>? AND state='synced' LIMIT 1", (first_id,)).fetchone():
+                    raise ValueError('A newer local capture is already synced. Review both histories before renumbering.')
+                for old in pending:
+                    if db.execute('SELECT 1 FROM sync_receipts WHERE preview_id=?', (old,)).fetchone() or db.execute(
+                            'SELECT 1 FROM sync_reports WHERE preview_id=? AND committed=1', (old,)).fetchone():
+                        raise ValueError(f'preview{old} has a cloud receipt; review its history before renumbering.')
+                next_id = max(cloud_max, db.execute('SELECT COALESCE(MAX(id),0) FROM previews').fetchone()[0])
+                for old in pending:
+                    while True:
+                        next_id += 1
+                        if not any((self.root / f'preview{next_id}.{ext}').exists() for ext in ('csv', 'xlsx')):
+                            break
+                    mapping[old] = next_id
+                for old, new in mapping.items():
+                    for ext in ('csv', 'xlsx'):
+                        source = self.root / f'preview{old}.{ext}'
+                        if source.exists():
+                            target = self.root / f'preview{new}.{ext}'
+                            copied.append(target)
+                            shutil.copy2(source, target)
+                            originals.append(source)
+                for old, new in mapping.items():
+                    db.execute('UPDATE previews SET id=? WHERE id=?', (new, old))
+                    db.execute('DELETE FROM sync_jobs WHERE preview_id=?', (old,))
+                    db.execute("INSERT INTO sync_jobs(preview_id,state) VALUES(?,'pending')", (new,))
+                    db.execute('DELETE FROM sync_failures WHERE preview_id=?', (old,))
+                    db.execute('DELETE FROM sync_reports WHERE preview_id=?', (old,))
+                db.execute("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='previews'", (next_id,))
+        except Exception:
+            for path in copied:
+                path.unlink(missing_ok=True)
+            raise
+        for path in originals:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return mapping
+
+
+def rows_after_last_order(previous, latest):
+    column = 'Order Number'
+    result = {'available': False, 'column': column, 'anchor_order': '', 'anchor_index': None,
+              'count': 0, 'first_added_order': '', 'latest_added_order': '',
+              'columns': latest['columns'], 'rows': [], 'message': ''}
+    if column not in previous['columns'] or column not in latest['columns']:
+        result['message'] = 'Order Number is required in both previews for last-order comparison.'
+        return result
+
+    date_col = next((c for c in ['Arrival Time', 'RequestArrivalTime', 'In-Time', 'Arrival Date', 'Date', 'Received Date']
+                     if c in previous['columns'] and c in latest['columns']), None)
+
+    anchor_order = ''
+    anchor_dt = None
+
+    if date_col:
+        valid_previous = []
+        for index, row in enumerate(previous['rows']):
+            ord_val = text_value(row.get(column)).strip()
+            if not ord_val:
+                continue
+            parsed_dt = pd.to_datetime(row.get(date_col), errors='coerce')
+            if pd.notna(parsed_dt):
+                valid_previous.append((parsed_dt, index, ord_val, row))
+        if valid_previous:
+            valid_previous.sort(key=lambda x: (x[0], x[1]))
+            anchor_dt, _, anchor_order, _ = valid_previous[-1]
+
+    if not anchor_order:
+        anchor_order = next((text_value(row.get(column)).strip() for row in reversed(previous['rows'])
+                             if text_value(row.get(column)).strip()), '')
+
+    if not anchor_order:
+        result['message'] = 'The previous preview has no Order Number to use as an anchor.'
+        return result
+
+    result['anchor_order'] = anchor_order
+
+    if date_col and anchor_dt is not None:
+        after_rows = []
+        for index, row in enumerate(latest['rows']):
+            parsed_dt = pd.to_datetime(row.get(date_col), errors='coerce')
+            if pd.notna(parsed_dt) and parsed_dt > anchor_dt:
+                after_rows.append((parsed_dt, index, row))
+        after_rows.sort(key=lambda x: (x[0], x[1]))
+        result['available'] = True
+        result['rows'] = [x[2] for x in after_rows]
+        result['count'] = len(result['rows'])
+        if result['rows']:
+            result['first_added_order'] = text_value(result['rows'][0].get(column)).strip()
+            result['latest_added_order'] = text_value(result['rows'][-1].get(column)).strip()
+        result['message'] = f'{result["count"]} orders found after {anchor_order} in {latest["name"]}.'
+        return result
+
+    matches = [index for index, row in enumerate(latest['rows'])
+               if text_value(row.get(column)).strip().casefold() == anchor_order.casefold()]
+    if not matches:
+        result['message'] = f'Last order {anchor_order} from the previous preview was not found in the latest preview.'
+        return result
+
+    result['available'] = True
+    result['anchor_index'] = matches[-1]
+    result['rows'] = latest['rows'][matches[-1] + 1:]
+    result['count'] = len(result['rows'])
+    if result['rows']:
+        result['first_added_order'] = text_value(result['rows'][0].get(column)).strip()
+        result['latest_added_order'] = text_value(result['rows'][-1].get(column)).strip()
+    result['message'] = f'{result["count"]} orders found after {anchor_order} in {latest["name"]}.'
+    return result
+
+
+
+
+def text_value(value):
+    return '' if value is None else str(value)
+
+
+def comparison_value(value):
+    # Google Sheets returns boolean cells as TRUE/FALSE; local JSON uses bools.
+    # Preserve identifiers and all other text exactly, including leading zeros.
+    rendered = text_value(value)
+    return rendered.casefold() if rendered.casefold() in ('true', 'false') else rendered
+
+
+def compare(previous, latest, keys=None, ignore=None, history=None):
+    ignored = IGNORED if ignore is None else set(ignore)
+    columns = [c for c in dict.fromkeys(previous['columns'] + latest['columns']) if c not in ignored]
+    old, new = previous['rows'], latest['rows']
+
+    def valid(candidate):
+        if not candidate or any(c not in previous['columns'] or c not in latest['columns'] for c in candidate):
+            return False
+        for rows in (old, new):
+            identities = [tuple(text_value(row.get(c)).strip().casefold() if c == 'Order Number' else text_value(row.get(c)) for c in candidate) for row in rows]
+            if any(not any(k) for k in identities) or len(set(identities)) != len(identities):
+                return False
+        return True
+
+    if keys and not valid(keys):
+        raise ValueError('Matching columns must form a unique, nonblank key in both previews. Select additional columns.')
+    if not keys:
+        keys = next((candidate for candidate in [['Order Number'], ['OPON'], ['Task ID'],
+                    ['Arrival Time', 'Parcel ID', 'Task Name', 'Client', 'Product']] if valid(candidate)), [])
+    changes = []
+    counts = {'added': 0, 'removed': 0, 'modified': 0, 'unchanged': 0}
+    record_columns = ['Comparison Status'] + list(dict.fromkeys(previous['columns'] + latest['columns']))
+    matched_rows, unmatched_rows = [], []
+
+    def comparison_row(status, row):
+        return {'Comparison Status': status, **{column: text_value((row or {}).get(column))
+                                                for column in record_columns[1:]}}
+
+    if keys:
+        def index(rows):
+            return {tuple(text_value(row.get(c)).strip().casefold() if c == 'Order Number' else text_value(row.get(c)) for c in keys): row for row in rows}
+        before, after = index(old), index(new)
+        for key in dict.fromkeys(list(before) + list(after)):
+            a, b = before.get(key), after.get(key)
+            label = ' | '.join(key)
+            if a is None or b is None:
+                kind = 'Added' if a is None else 'Removed'
+                counts[kind.lower()] += 1
+                changes.append({'Change': kind, 'Task Key': label, 'Column': '(entire row)',
+                                'Previous Value': json.dumps(a, ensure_ascii=False) if a else '',
+                                'Latest Value': json.dumps(b, ensure_ascii=False) if b else ''})
+            else:
+                changed = [c for c in columns if comparison_value(a.get(c)) != comparison_value(b.get(c))]
+                counts['modified' if changed else 'unchanged'] += 1
+                matched_rows.append(comparison_row('Matched - changed' if changed else 'Unchanged', b))
+                for c in changed:
+                    changes.append({'Change': 'Modified', 'Task Key': label, 'Column': c,
+                                    'Previous Value': text_value(a.get(c)), 'Latest Value': text_value(b.get(c))})
+            if a is None:
+                unmatched_rows.append(comparison_row('Newly Added', b))
+            elif b is None:
+                unmatched_rows.append(comparison_row('Missing', a))
+        method = 'Matched by ' + ', '.join(keys)
+    else:
+        def fingerprints(rows):
+            return Counter(tuple(comparison_value(row.get(c)) for c in columns) for row in rows)
+        before, after = fingerprints(old), fingerprints(new)
+        counts['unchanged'] = sum((before & after).values())
+        for values, frequency in (before & after).items():
+            for _ in range(frequency):
+                matched_rows.append(comparison_row('Unchanged', dict(zip(columns, values))))
+        for kind, delta in [('Removed', before - after), ('Added', after - before)]:
+            counts[kind.lower()] = sum(delta.values())
+            for values, frequency in delta.items():
+                for _ in range(frequency):
+                    row = json.dumps(dict(zip(columns, values)), ensure_ascii=False)
+                    changes.append({'Change': kind, 'Task Key': '(unmatched)', 'Column': '(entire row)',
+                                    'Previous Value': row if kind == 'Removed' else '',
+                                    'Latest Value': row if kind == 'Added' else ''})
+                    unmatched_rows.append(comparison_row('Missing' if kind == 'Removed' else 'Newly Added',
+                                                         dict(zip(columns, values))))
+        method = 'No unique task key: exact-row comparison. Updates appear as removed and added rows.'
+    record_counts = {'matched': counts['modified'] + counts['unchanged'],
+                     'missing': counts['removed'], 'newly_added': counts['added'],
+                     'unchanged': counts['unchanged']}
+    from production_timing import completion_from_out_time
+    if keys == ['Order Number']:
+        from preview_completion import comparison_completions
+        decorated = comparison_completions(matched_rows + unmatched_rows, previous, latest, history)
+    else:
+        decorated = [completion_from_out_time(row) for row in matched_rows + unmatched_rows]
+    matched_rows, unmatched_rows = decorated[:len(matched_rows)], decorated[len(matched_rows):]
+    if any(row.get('Status') == 'Completed and Delivered' for row in decorated):
+        record_columns = list(dict.fromkeys(['Comparison Status', 'Order Number', 'Status', 'Out Time'] + record_columns))
+    return {'columns': CHANGE_COLUMNS, 'rows': changes, 'counts': counts, 'keys': keys, 'method': method,
+            'record_columns': record_columns, 'matched_rows': matched_rows,
+            'unmatched_rows': unmatched_rows, 'record_counts': record_counts,
+            'ignored': sorted(ignored), 'previous': previous['name'], 'latest': latest['name'],
+            'order_append': rows_after_last_order(previous, latest),
+            'added_columns': [c for c in latest['columns'] if c not in previous['columns']],
+            'removed_columns': [c for c in previous['columns'] if c not in latest['columns']]}

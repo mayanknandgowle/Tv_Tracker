@@ -1,0 +1,115 @@
+# Tv Tracker 2.1
+
+Tv Tracker runs the existing production workspace as a Windows desktop application. There is no hosted backend, Render subscription, or PostgreSQL service. The packaged release includes Electron/Node and the Python engine. Google Sheets remains the production source of truth.
+
+## Install or run
+
+- **Installer:** open `Tv-Tracker-2.1.0-x64.exe` and follow the per-user installation wizard. Administrator access is not required for the default location.
+- **Portable:** extract the entire `Tv-Tracker-2.1.0-x64.zip` into a permanent folder and open `Tv Tracker.exe`. Keep its `resources` folder and other files together.
+- This release targets Windows x64 and was tested on Windows 11. It is unsigned; a trusted code-signing certificate is needed before broad public distribution.
+- Python, Node.js, npm, and a separately running web server are not required to use the packaged app. Queue extraction uses an explicitly selected browser when configured, otherwise prefers installed Google Chrome and then Microsoft Edge.
+
+## First connection
+
+1. Select **Connect your workspace**, the settings icon, or press **Ctrl+,**.
+2. Enter the Google spreadsheet URL or ID and the exact names of the two production tracker tabs. Defaults use stable tracker names without a month suffix. The exact shipped September aliases are migrated during sync; custom tab names remain unchanged.
+3. Import a Google service-account JSON key. Enable the Google Sheets API in that Google Cloud project and share the spreadsheet with the displayed account email as **Editor**.
+4. Enter your TitleVision username, password, and queue URL. The queue must use `https://tv.datatracetitle.com`.
+5. Save settings. The local engine restarts automatically. Reopen settings and use **Test saved Google Sheets connection**.
+
+The password and service-account JSON are encrypted with Windows DPAPI through Electron safeStorage. Settings reads expose credential-presence indicators and the service-account email, never the saved password or private key. These files belong to the Windows account that created them; do not copy the encrypted vault to another computer as a credential migration method. DPAPI protects against other Windows accounts; other software running as the same user remains within the local trust boundary.
+
+## Everyday work
+
+- **Orders / Daily Orders / Monthly report:** production reports from the configured Sheet. A dated offline banner identifies a previously cached copy. Live corrections require a connection.
+- **Captures:** inspect an imported or extracted raw queue locally and export it as Excel or filtered CSV. A raw capture is not substituted for production reporting.
+- **Changes:** compare two captures by Order Number without changing tracker statuses.
+- **Activity:** inspect the latest local sync report, missing orders, ambiguities, and baseline conflicts.
+- **Ctrl+K:** find a page, open settings, or import a file.
+- Export confirms any shortened Excel sheet names and applies the shared row palette, including Free Site cells.
+- Google Sheets reads are shared and cached for 30 seconds. Saving a sync or SLA correction invalidates the cache. The connection test forces a fresh read.
+- Imported files are saved locally even before credentials are configured. Pending uploads are processed once Sheets is configured. A failed upload has three bounded attempts; a persisted failure pauses later uploads until you choose Retry sync. Validation conflicts require correction before retry. Conflicting preview IDs in an existing cloud history are rejected by the reconciliation guard rather than overwriting that history; resolve the conflict before retrying.
+
+Internet is required for extraction and Google Sheets operations. Previously saved captures and production copies remain readable without it. The application does not solve portal CAPTCHA or MFA automatically; normal portal access is still required.
+
+Each Windows user has a separate Tv Tracker profile and must save that user's spreadsheet URL and service-account JSON key in Connections & settings. Share that exact spreadsheet with the `client_email` from the imported key as Editor, and enable the Google Sheets API in the key's Google Cloud project. An enabled key alone does not grant spreadsheet access. After saving, use **Test saved Google Sheets connection**; the app reports Google's 403 reason when access is denied. Imported Excel rows remain local until the report publication status says Google Sheets updated.
+
+## Scheduling and closing
+
+Schedule times use India Standard Time anchored to Google HTTPS time and advanced by a monotonic clock. Until an initial network-time synchronization succeeds, schedules cannot be enabled or triggered; manual capture remains available. An established time anchor continues during a temporary outage. The computer must be awake and Tv Tracker must be running. Closing the window keeps it in the system tray by default; double-click the tray icon to reopen it. **Workspace → Quit** or the tray's **Quit** stops the app and local engine. An active job prompts before cancellation. Settings → Workspace can disable tray behavior or enable launch at Windows sign-in. Only one instance uses a given profile.
+
+AutoLogin Trigger can repeat every day, Monday through Friday, Saturday and Sunday, or on selected custom days. The selected days apply to all saved times. If the computer misses several times on one selected day, it makes one catch-up attempt when the app is running again that day; older days are skipped. The X beside Last attempt or Last success clears that value from the schedule panel, while Sync activity retains the operation record. Next run remains visible and is not cancelled by clearing history.
+
+## Data, backup, and migration
+
+Use **Settings → Workspace → Open data folder** for the exact location. The app retains `%APPDATA%/DataTrace Studio/workspace` as its writable data location for compatibility with version 2.0. The visible product name is Tv Tracker; the internal profile, installer ID and startup entry identity remain stable. On launch, startup settings refresh the executable path for the renamed app. Reinstalling or upgrading does not intentionally remove this data. The installer preserves app data when uninstalling.
+
+**Create backup** writes a ZIP containing the SQLite preview history and receipts, local schedule/product preferences, and the dated production cache. Passwords, private keys, and logs are excluded. **Restore backup** validates the archive/database, saves a safety backup of the current workspace, and restores local data. Google Sheets is not changed. Safety copies are retained beside the workspace for recovery; remove them only when you no longer need them.
+
+To migrate the earlier browser application's data, close both applications, make a copy of the old `gsheet_dashboard/previews` directory, and copy it into the desktop workspace as `previews`. Optionally copy `remaining_products.json` and `sync_schedule.json`. Configure credentials through Connections; do not copy a `.env` or key into the installed application. Keep the original project as your rollback copy. An empty workspace can recover previously synced captures from Google Sheets before its first extraction.
+
+## Troubleshooting
+
+- **Missing connection:** configure the Sheet and service-account key, then use the saved-connection test.
+- **Authentication rejected:** import a current active key and verify Editor sharing and Sheets API access.
+- **Browser exits before extraction starts:** select Chrome in Settings → Workspace → Choose browser. Chrome passed this release’s packaged fixture; Edge failed on the validation machine.
+- **Browser not found:** install Edge/Chrome or select its executable in Settings → Workspace.
+- **Startup failure:** use the displayed error and **Help → Open logs**. Backend crashes offer an engine restart. The app never binds to a public network interface.
+- **Offline:** keep reading saved captures/reports; reconnect and retry. Pending previews remain stored locally.
+- **Unreadable vault after changing Windows accounts:** use the original account or rename `settings.vault` and configure new credentials. Local workspace backups remain separately usable.
+- **Installer warning:** this local release has no code-signing certificate. Verify the supplied SHA-256 manifest before distributing it internally; public distribution should use a signed build.
+
+## Build from source
+
+Build tools are needed only by developers: Python 3.12 x64 and Node.js 22.12 or newer. Dependency versions are recorded in `desktop/requirements-build.lock` and npm lockfiles.
+
+From the repository root in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File desktop/build.ps1 -Python C:\Path\To\Python312\python.exe
+```
+
+The script installs Python build dependencies into `.desktop-build/deps`, installs locked npm dependencies, builds the UI and standalone engine, and writes the installer/portable ZIP to `release/2.3.0`. Pass `-DirectoryOnly` for an unpacked test build. It does not publish or upload a release.
+
+For desktop development after building dependencies and the UI:
+
+```powershell
+$env:DATATRACE_PYTHON = 'C:\Path\To\Python312\python.exe'
+$env:DATATRACE_DEV_DEPS = (Resolve-Path .desktop-build/deps).Path
+npm.cmd --prefix desktop start
+```
+
+Tests:
+
+```powershell
+npm.cmd --prefix desktop test
+node desktop/smoke.cjs
+# To smoke-test the packaged application:
+$env:DESKTOP_EXE = (Resolve-Path 'release/2.3.0/win-unpacked/Tv Tracker.exe').Path
+node desktop/smoke.cjs
+```
+
+See `docs/DESKTOP_VALIDATION.md` for the checks actually completed and their limits.
+
+## Architecture decisions
+
+Electron provides a predictable native window and a bundled Node runtime while retaining the tested React workflows. Its memory and download size exceed a minimal WebView shell; this release favors reliable integration and distribution. The Python engine is bundled with PyInstaller in directory mode, avoiding repeated executable extraction on each launch. The renderer is sandboxed with context isolation and without Node integration. A narrow preload API handles settings and native dialogs, checks IPC senders, and never provides generic filesystem or shell access. The local engine uses an OS-assigned loopback port and per-launch authentication. Windows Job Objects clean up extraction descendants when the engine exits.
+
+References: [Electron security guidance](https://www.electronjs.org/docs/latest/tutorial/security), [Electron safeStorage](https://www.electronjs.org/docs/latest/api/safe-storage), [PyInstaller operating modes](https://pyinstaller.org/en/stable/operating-mode.html).
+
+## Version 2.1 upgrade behavior
+
+Existing receipt tables and old workspace backups are upgraded without re-uploading confirmed captures. New backups include local audit receipts and failures. The shipped historical baseline workbooks are used during sync; opening an unconfigured app does not write them to Google Sheets. The sync rules intentionally clear tracker Comments, Assignee and iAssignee while preserving raw captures and other manual columns/formulas. Read the [integration report](DESKTOP_UPSTREAM_ALIGNMENT.md) before the first production sync.
+
+
+## Version 2.3 workspace and recovery
+
+Use Overview for production totals, Orders for focused search and filters, and Captures for raw queue history. The order inspector shows current fields and matches in the latest 100 local captures. Saved views retain the query, product, attention and column filters. The Windows app keeps appearance and saved views in its encrypted settings across engine/app restarts; browser development uses local storage. Workspace backups exclude this settings vault, so transfer connections and UI preferences separately when changing Windows accounts.
+
+Settings → Workspace → Export diagnostics saves operation times, coarse failure categories and counts, excluding source records, account names, paths and credentials. Activity retains up to 200 operation entries and marks unfinished operations interrupted after restart.
+
+Create a backup before upgrading from 2.2.1. Subsequent updates initiated in 2.3.0 create a `backups/before-update-*.zip` recovery copy before stopping the engine; a backup failure blocks installation. Restore newer backups only with a compatible app version. The extra operation-history table may be rejected by older releases.
+
+Schedule catch-up runs once for missed times from today. Previous days are not replayed. The app and computer must remain running/awake.
+
+Public releases require a valid Windows Authenticode signature. The workflow expects `TV_TRACKER_CSC_LINK` and `TV_TRACKER_CSC_KEY_PASSWORD` from the signing identity owner. Pull requests run validation without signing credentials. A source push becomes an in-app update only after a tested release is published. This local 2.3.0 candidate is not a signed public release; see `TV_TRACKER_2_3_0_REVIEW.md` for evidence and remaining gates.

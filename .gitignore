@@ -1,0 +1,68 @@
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Node modules
+node_modules/
+.npm-cache/
+.cache/
+package-lock.json
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.test-deps/
+.desktop-build/
+release/
+desktop/test-output/
+!desktop/package-lock.json
+!desktop/extractor/package-lock.json
+!gsheet_dashboard/frontend/package-lock.json
+!gsheet_dashboard/package-lock.json
+
+# Streamlit config cache
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+service_account*.json
+*service_account*
+settings.vault*
+Local State
+connection-backups/
+gsheet_dashboard/sync_status.json
+gsheet_dashboard/queue_data.json
+gsheet_dashboard/previews/
+gsheet_dashboard/frontend/dist/
+gsheet_dashboard/frontend/test-results/
+gsheet_dashboard/frontend/playwright-report/
+gsheet_dashboard/backups/
+gsheet_dashboard/extractor-diagnostics/
+gsheet_dashboard/scratch/
+gsheet_dashboard/production-cache.json
+gsheet_dashboard/sync_schedule.json
+gsheet_dashboard/queue_data_sheet2.csv
+gsheet_dashboard/queue_data_sheet2.xlsx
+gsheet_dashboard/export-verification.xlsx
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.tvbackup
+*.tvcloud
+cloud-archives/
+gsheet_dashboard/runtime-data/
+DataTrace_Workspace.zip
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Local report exports and audit artifacts
+gsheet_dashboard/production-exports/
+gsheet_dashboard/output/
+output/

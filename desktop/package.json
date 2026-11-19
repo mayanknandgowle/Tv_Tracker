@@ -1,0 +1,90 @@
+{
+  "name": "tv-tracker",
+  "version": "1.0.0",
+  "description": "Private desktop workspace for title production and Google Sheets synchronization",
+  "author": "Tv Tracker",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs",
+    "pack": "electron-builder --dir --win --x64 --publish never",
+    "dist": "electron-builder --win nsis zip --x64 --publish never"
+  },
+  "build": {
+    "appId": "com.mayanknandgowle.tvtracker",
+    "productName": "Tv Tracker Workspace",
+    "asar": true,
+    "directories": {
+      "output": "../release/${version}",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "settings.cjs",
+      "assets/**",
+      "package.json",
+      "updater.cjs"
+    ],
+    "extraResources": [
+      {
+        "from": "../.desktop-build/backend/datatrace-engine",
+        "to": "backend"
+      },
+      {
+        "from": "../.desktop-build/extractor",
+        "to": "extractor",
+        "filter": [
+          "**/*",
+          "!**/test/**",
+          "!**/tests/**",
+          "!**/*.map"
+        ]
+      },
+      {
+        "from": "../desktop/extractor/node_modules",
+        "to": "extractor/node_modules",
+        "filter": [
+          "**/*",
+          "!**/test/**",
+          "!**/tests/**",
+          "!**/*.map"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "include": "installer.nsh",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "artifactName": "Tv-Tracker-${version}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "mayanknandgowle",
+        "repo": "Tv_Tracker",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  }
+}

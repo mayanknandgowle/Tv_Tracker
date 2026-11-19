@@ -1,0 +1,209 @@
+# TV Search Production Sync
+
+The application follows `../docs/TV_Search_Sync_Prompt.md` with the later tracker
+updates described here. Google Sheets supplies the live tracker and report data.
+Saved local previews supply the Changes comparison. Status Report is on Data sheets.
+
+## Run
+
+### Report updates from updates_traker.pdf
+
+- **Tracker report** uses the retained Google Sheets production trackers. **Import Excel report** uses a separately saved workbook dataset across Overview, Data Sheets, Daily Orders, Monthly Orders and PR Excel. Switching sources republishes the selected reports; imported files never mark absent tracker orders completed.
+- Imported monthly reports assign **Completed and Delivered** orders to a later month when a valid **Out Time** falls in that month. Completed orders with no Out Time remain in their received month and stay in its completed list. Imported received dates use the source Date / Received Date first, with In-Time as a fallback. A later In-Time never creates a new received date. Tracker reports continue using In-Time first.
+- Select **Import files** beside Export to upload up to 30 XLSX/CSV files together (20 MB combined, 100,000 order rows). All worksheets with Order Number and Status/Task Status headers are read. A malformed file rejects the whole batch. Every worksheet row with an Order Number is a separate occurrence, even when that number repeats within a workbook or across files. Each occurrence retains its own Product, Date, Status and Out Time; identical-looking rows are also counted separately. Repeated rows have a Source row ID so edits, Google Sheets sync and exports target the correct occurrence. Existing saved imports recover earlier occurrences from their saved source rows after a safety backup, preserving edits on the previously retained row. The import dialog shows source data rows and included report rows, excluding headers; Duplicate Orders includes an informational Across workbooks list with both file and worksheet row references. Existing tracker data remains available when switching back.
+- Daily Orders uses Received, Completed, Clarification, Cancelled, Vendor Pending, In-House Pending, SLA OnTime and Missing. Assign to ABS is Vendor Pending. All other statuses outside completed, cancelled and clarification are In-House Pending. Selecting a date highlights the matching row in the Daily Status Report tab in Google Sheets.
+- Selecting a Daily Orders date also filters the shared **All Products** Google Sheets tab to that received day. The next selection replaces its basic filter. **Reset date** clears the highlight and shows all orders in All Products again. Daily metric cards jump to their corresponding order tables, including the category tables in Import Excel report mode.
+- Chart filters, Status breakdown, and the custom chart start open. The active report control and duplicate-order chips use theme-aware colors in dark mode.
+- Changes has clickable Matched, Missing Previews, Newly added and Unchanged cards. Each card scrolls to and focuses its matching order table, as in Daily Orders. Matched includes changed and unchanged orders present in both previews; Unchanged shows only unchanged matches. All four tables support the shared search and column filters, sorting, pagination and filtered CSV downloads.
+- The PR Excel report contains monthly totals formatted as `MMM-YY`, a year-to-date total, the current month's daily rows in India time, and a received/completed/capacity chart. August and September remain in the monthly summary when October is current; the daily section starts with available October dates in ascending order. This applies to imported and tracker reports, Google Sheets and the default Excel download. Selecting an earlier date in Daily Orders does not change the capacity month. An explicitly requested monthly download retains that month's detail. PR Excel and Daily Orders downloads use real Excel dates displayed as `DD-MM-YY` for daily rows. PR Excel matches the reference colours: peach headers, green monthly rows, blue year-to-date totals, grey daily date/capacity cells and yellow totals. Formatting is cleared outside the populated Google Sheets table. Daily targets start at 700 and 750 and can be changed in the Capacity Report screen. Targets are counted only for dates present in the source; historical sample order counts are never inserted.
+- Capacity Report / PR Excel always uses the saved imported Excel dataset, independently of the source selected for other reports. Every repeated source occurrence is counted separately. Received dates use Date first, then In-Time; Completed and Delivered rows need a valid Out Time. Saturday and Sunday receipts, statuses and completions count on the preceding Friday, including month and year boundaries. Blank or invalid Out Time values are excluded from completed counts and reported separately. A valid completion date may appear with zero receipts. Original source dates remain visible in drilldowns. The screen, search, editable details, monthly/YTD totals and export use the same Excel data. Without an import, capacity stays empty. Daily Orders and Monthly Orders retain their existing calculations.
+- Click a daily date in **Capacity Report** or **Daily Orders** to open a searchable order dialog with sorting, pagination and filtered CSV downloads, matching Overview’s detail tables. Capacity dates show Received, Completed, Clarification, Cancelled, Vendor Pending, In-House Pending and Recorded changes. The received/status lists contain only that date’s receipts; completed lists use the same actual completion dates as the capacity totals. Carryover and next-date workflow groups are not included. Every capacity count also opens its matching group, including monthly, YTD and daily totals. Capacity target numbers open received orders for comparison with the target. Imported prior-month Completed and Delivered orders count on their valid Out Time date, matching the detail list and export.
+- Select an **Order Number** in either date dialog to edit its fields, including Status, In-Time and Out Time. Order Number, generated row numbers and calculated SLA fields remain fixed. Saves check that the order and report source have not changed, create a workspace backup, and update the selected imported dataset or its owning tracker row before queuing report publication. Recorded changes include the field, previous/new values and detection time; new edits remain attached to the report date from which they were made. Existing detected Sheet changes are shown by their detection date in India time. History begins when changes are first recorded; it does not infer earlier edits from current statuses. Editing the report source does not rewrite the original uploaded workbook on disk.
+- Publishing exposes eight tabs: All Products, Full_Search_MON_YEAR, Remaining_Search_MON_YEAR, Daily Status Report, PR Excel, Monthly Orders, Status Report and SLA Status. Monthly Orders ends at SLA on Missing. A date click updates the Daily Status Report highlight and the All Products filter; source publication refreshes the product reports. In Excel mode, Full_Search contains only the Full Search workbook and Remaining_Search only the C-O/Update workbook, regardless of Product or saved tab membership. Their counts sum to All Products; only rows from saved imported files are published. Both source views use the Full Search production columns with **Typer in column Y**, preserving manual Typer values. SLA Category belongs to the SLA Status report. Other tabs are **hidden, not deleted**, because the existing tracker, capture receipt and recovery logic needs them. Replaced report values and sheet metadata are backed up under the workspace's `backups/reports` directory.
+- Overview's imported orders, attention count and imported worksheets open searchable tables. Data Sheets' counts and each Monthly Orders card open matching records with all available details, sorting, pagination and CSV export. Visible orders follows the current product selection, search and filters. The shared workspace heading no longer displays TITLE PRODUCTION.
+- **SLA Status** in the Workspace menu shows current deadline categories by Status, a stacked bar chart and clickable order counts. Blank/invalid expirations are listed separately and excluded from totals. Extracted SLA reports compare absolute deadlines with the latest Arrival Time date in the selected queue, preserving source calendar dates without timezone conversion; negative queue durations are overdue and positive durations are resolved from the report's capture/import time. Google Sheets receives the same summary and a chart on full report publication. **Download SLA Status** returns a report snapshot with the sample's **Sheet2** summary and **Sheet1** detail columns. The download contains a native count PivotTable with cached results and a bar chart; the pivot source is Sheet1.
+- The Google Sheets **SLA Status** table follows the reference's two header rows: Count of Order Number / Column Labels, then Status, Future SLA, Negative SLA, Today SLA and Grand Total. Empty category counts display as blank cells. Headers and totals are bold, the table has borders, and existing cell colors and conditional color rules are cleared. Its chart uses grayscale. The custom Orders chart starts grouped by **Status** (or Task Status for raw captures); users can choose another column manually.
+- The pencil beside each SLA summary status changes every order in that status group. Enter a new name such as SearchFix, or choose an existing status such as QC in Progress to combine the groups. Saves check the selected orders against the current source, back up changed tracker tabs, and republish the related reports. Google Sheets Status edits in All Products or either product view are checked every 30 seconds in both tracker and imported modes; the refresh buttons check immediately. Conflicting edits in separate tabs require correction before any status is overwritten.
+- Tracker **SLA Status** counts unique, trimmed, case-insensitive Order Numbers in the selected preview, plus orders explicitly added by the user to that preview's SLA report. Captured and manually added counts are shown separately when manual additions exist. Missing orders from older previews are excluded, and disappearance does not assign Completed and Delivered in this report. Extracted SLA Status never takes Completed and Delivered from saved rows, All Products, completion timestamps or old overrides. It classifies present tasks using their active queue conditions, and rejects that completion label in its status/order editors. Production and imported workbook completion records remain governed by their completion dates. Saved statuses and manual corrections still apply to current orders. **View current orders** opens the selected queue and its manual additions. The heading and preview picker distinguish captured rows from unique orders. The panel beside order search lists repeated Order Numbers, their counted status and SLA category, the applied condition, and the capture row retained for SLA. Click an order to compare its captured entries, matched conditions and counted result; **View repeated Order Numbers** opens all repeated entries. The highest-priority matching queue condition selects the source entry; equal priorities retain the first matching captured entry. Manual status edits still override the resulting status. The panel also reconciles captured rows with unique Order Numbers. Rows with no Order Number are reported separately. Raw captures remain unchanged. The displayed equation verifies **Future SLA + Negative SLA + Today SLA = Grand Total**; missing or invalid deadlines remain separately listed rather than assigned a fabricated deadline category.
+- Queue rules apply before saved tracker statuses, in this order: **CRSP2 / SearchFix** in Task Name, or **ClientReview / Quality Control** in Product, becomes **SearchFix** (including a blank Last User). Both task names share one SLA group and keep their original Order Numbers; Task Name matching ignores case and spaces. **ON HOLD** in ETA Comments becomes **Waiting for Effective Date**. Products **Attorney Approval** and **Home Builder / Home Builders** (including product variants such as **Home Builder L..**) get separate status rows. **Apoloize**, **apologize**, or **apologise** as a word in ETA Comments becomes **Assign to ABS**. **Abstract**, **abstractor** or **abstractors** as a complete word anywhere in ETA Comments becomes **Assign to ABS**; the earlier **assigned to the abst** wording is also supported. These comment matches ignore case and tolerate line breaks between words. **TypingModule** with Task Status **In Progress**, **Task Suspended** or **Available** becomes **Typing in Progress**. Workflow suspension becomes **Awaiting for Clarification**. A blank Last User with Task Status **Available** becomes **Search In Progress**. **Task Suspended** on other task names does not automatically become **Typing in Progress**; **Workflow Suspended** retains its separate clarification rule. Other orders retain their preview Status, or their matched All Products Status, with Search In Progress as the fallback. Allowed active-status manual SLA edits take priority over these queue rules. Detail records and the Excel download include Status Reason, Source Preview and Queue Presence.
+- In the SLA status pencil editor, choose **Choose order numbers**, search by Order Number, select the orders and save a new status. **All orders in this status** retains the bulk editor. Selected-order edits validate each order's current status and preserve unselected orders. In Tracker mode these edits belong to the selected SLA preview and do not alter raw captures or production tracker statuses; the SLA summary and download use the same saved corrections.
+- **+ Add status** creates a saved status row with zero orders. Click its name to open its detail table, or its **+** to add an order. **Look up order** first checks the selected preview and its manual additions; existing orders load their details and move to the chosen status without increasing the total. New orders require an absolute SLA expiration in source time. Row actions provide **pencil** to edit details, **+** to add another order and **Copy** to reuse details for a different Order Number. The editor also has **Copy details** for the clipboard. Manual additions and detail edits are saved per preview, backed up, and shared by the UI, Excel export and SLA Status sheet; they do not change captured queues or production trackers. A changed order must be looked up again before an edit can overwrite it.
+- The **+ beside the Status heading** opens the same status creator. Manually created statuses also have a **delete** button. Empty statuses can be removed directly; populated statuses require choosing another status for every assigned order. Deletion checks the current order list, preserves every order and its deadline/details, and changes only the selected preview. Older shared status names remain available in other saved previews. Pressing Enter in the Order Number field performs the lookup before saving the move.
+- SLA detail tables place **Status** immediately after **Order Number**. Searching for an order that produces one match shows its **Current status** above the table, along with its SLA category. These labels use the same effective status and manual corrections as the summary and exports.
+- Queue extraction saves full **ETA Comments / Comment** text from the cell's tooltip when the portal shortens the visible label. Compatible native titles, custom tooltip attributes and accessible tooltip references are supported; unrelated action labels never replace order identifiers. New captures retain paragraph breaks. Old captures keep the text originally saved, so take a fresh capture to obtain missing tooltip content. SLA detail cells wrap the full comments, and the editor uses full-width expanding fields and displays the current status with its matching reason. Assignment matching accepts the complete words **Abstract**, **abstractor** and **abstractors** anywhere in ETA Comments, including **as per the abstractor**, **assigned it to the abstractor**, and **update from the abstractor**. The earlier **assigned to the abst** wording is also supported; a partial word such as **abstainer** does not match.
+- **ABS assignment:** apologies, Abstract/abstractor wording, and EOD/sooner commitments all use **Assign to ABS**. Legacy **Need to Assign ABS** labels and saved edits merge into that group. Completion evidence, SearchFix, ON HOLD, special products and manual edits keep their priority. Extracted SLA uses the latest portal Arrival Time date as its calendar reference; relative countdowns remain anchored to capture time.
+- The Attorney Approval and Home Builder queue rules also recognize portal labels shortened with dots or an ellipsis, such as **Attorney Appro..** and **Home Buil..**. Attorney Approach is an alias for Attorney Approval. The raw Product text is preserved in detail records and exports. A category appears when its matching orders are present; absent products do not create sample counts.
+- Extraction uses the same ETA Comments, Product, Task Name and Task Status rules as SLA Status. Every fresh capture rechecks matching queue rules, even when task fields have not changed. This corrects a saved Completed and Delivered label without completion evidence when the order is still assigned to an abstractor. Valid Out Time remains authoritative. Google Sheets manual status overrides are tied to the current saved preview so a later extraction can classify the new queue evidence. Raw captures remain unchanged.
+- Workspace tables and order dialogs have column filter buttons with searchable unique-value checkboxes, Select All, text/number/date conditions, Apply and Clear. Multiple column filters combine. Order tables filter their entire loaded dataset before sorting and pagination, and CSV downloads include every matching order across pages. Saved order views retain their column filters. Filtering changes the displayed table without editing source orders.
+- The current Full Search and Remaining Products views partition every order in All Products by Product, including orders received in an earlier month. Full Title and Full Search belong to Full Search; every other product, including Two Owner, belongs to Remaining Products. Product chart selections do not remove orders from these data views. Blank extra headers are omitted from generated product views.
+- A failed Sheets update keeps the imported dataset and selected mode locally and shows a retry message. Use **Publish current report** in the import dialog to retry. Export downloads the selected source with the eight report worksheets. Report mode and imported records are included in workspace backup/restore.
+
+Restart the project app after updating the files. The frontend build in `frontend/dist` includes these changes; an already installed desktop executable must be rebuilt/reinstalled separately. No live Google Sheets migration is performed by editing these source files.
+
+Connection failures now show the original authentication/network error during preview recovery. Invalid JWT signature errors include the saved key ID so it can be checked against Google Cloud's Keys page. A matching JSON file hash confirms an identical file; it does not establish that Google still accepts that key. After a working connection is restored, captures blocked by authentication or network failures resume automatically in their original order. Rejected-key connection checks are spaced five minutes apart; validation conflicts still require review. A revoked or inactive private key must be replaced with an active JSON key from Google Cloud.
+
+Targeted checks: `python -m unittest test_pdf_report_workspace test_report_refinements test_preview_completion test_monthly_sla_history test_monthly_production`. The isolated browser check is `npx playwright test --config=playwright.reports.config.js` after a frontend build; it uses installed Edge and mocked data.
+
+Run `gsheet_dashboard/start-local.bat` to start the existing local build under your Windows account.
+It opens the workspace in your system browser after the server binds its port. Keep the
+terminal open while using the workspace. If an embedded preview shows **This page crashed**,
+use **Open in external browser** or paste the printed URL into Microsoft Edge or Google Chrome.
+When port 8510 is already in use, the launcher opens the available port printed in the terminal.
+For a server without automatic browser opening, run `python gsheet_dashboard/server.py`.
+For first-time dependency setup, run `gsheet_dashboard/run.bat`, or install `gsheet_dashboard/requirements.txt`, build
+`gsheet_dashboard/frontend` with `npm run build`, and run `gsheet_dashboard/server.py`.
+The workspace normally opens at http://localhost:8510. Configure the service account
+and portal login in `gsheet_dashboard/.env` using `.env.example`. Share the configured
+Google Sheet with the service account as Editor. Never commit credentials.
+
+If a pending capture has the same preview number as a different capture already in
+Google Sheets, use **Resolve numbering & retry** on its sync warning. The app saves
+a local recovery copy, moves the pending captures after the cloud's latest preview
+number, and retries sync. Already synced captures and cloud history stay in place.
+
+On Windows, you can also open **Connections & settings** in the local browser to
+enter the spreadsheet URL, tracker tab names, TitleVision login and queue URL, and
+import a service-account JSON key. **Save settings** applies the connection immediately;
+**Test saved Google Sheets connection** checks access without writing to the sheet.
+These settings are encrypted for your Windows account in `settings.vault.browser`
+and take precedence over `.env` on restart. Blank password and key fields preserve
+the saved values. Browser connection settings are available only from localhost;
+the Workspace and Updates tabs remain in the installed desktop app.
+
+Windows credential encryption requires the local server to run under the Windows account
+that saved the connections. Use `start-local.bat` outside a restricted development sandbox;
+saved passwords and service-account JSON keys remain encrypted across server restarts.
+
+Overview shows **Duplicate Orders** in place of Imported files. Click its count to see
+the repeated Order Numbers, each occurrence’s status and Out Time, and its earlier/later worksheet locations. These comparisons are informational; every source occurrence is included.
+
+## Edits to imported Google Sheets orders
+
+After an Excel report is published, edit orders in **All Products**, **Full_Search_MON_YEAR**,
+or **Remaining_Search_MON_YEAR**. Tv Tracker checks these tabs every 30 seconds while
+the local server is running. The refresh icon beside the logo checks immediately and
+refreshes all report workspaces. Added orders, removed rows, status edits and other
+field changes update the saved report dataset and republish the eight reporting tabs,
+including Daily Status Report, Monthly Orders and PR Excel.
+
+**Import Excel Changes**, below Captures, keeps a persistent history with Order Number,
+change type, column, previous/new values, source tabs and detection time. Search by
+Order Number, filter Added/Updated/Removed, or open a change to compare the full row.
+History begins when this feature first checks the Sheet; it cannot recover earlier edits.
+
+Changes are compared against the last synced version of each tab. An unchanged copy
+in another tab does not override an edit, and removing an order from one editable tab
+removes it from the report dataset. Different fields edited in different tabs are merged.
+Conflicting edits to the same field, missing order tabs, invalid headers or repeated IDs
+within a tab stop refresh and display an error for correction. Replacing a workbook
+resets that workbook's orders; edits to other saved files and added Sheet orders are
+kept. Replace all saved files resets the complete dataset. Recorded Sheet change
+history remains available after file replacements.
+
+## Trackers and history
+
+The supplied September 2026 workbooks are bundled under `default_trackers` and loaded
+automatically. The Google Sheet tracker names are:
+
+- `TV_Search_Production_Report_Full_Search`
+- `TV_Search_Production_Report_C-O_and_Update`
+
+Existing tracker rows and manual fields are preserved. Missing default orders append
+after existing rows. Duplicate default source rows are recorded in the local sync report; the
+original workbooks remain intact. Extra manual columns are preserved.
+
+Every queue extraction or legacy capture import saves a numbered preview locally and syncs automatically. The separate **Import Excel report** workflow above saves report data without creating a queue capture.
+`preview1`, `preview2`, etc. are immutable local snapshots in SQLite and CSV/XLSX.
+`All Products` and `Sheet1` retain accumulated raw Google Sheet history with preview
+names and timestamps. A smaller
+preview never reduces tracker totals. Preview deletion is available only as an
+explicit human action in the sidebar; raw Google Sheet history stays available.
+
+Orders match by trimmed, case-insensitive Order Number. A new order starts as Search
+In Progress, except workflow-suspended orders, which become Awaiting for Clarification.
+For existing orders, changed status-driving fields can apply those same two explicit
+rules. Since 2.5.3, an order disappearing between valid saved previews retains its
+tracker row and becomes Completed and Delivered at the first missing preview's
+timestamp. Cancelled/suspended rows and precise manual completion times are
+preserved. Empty or malformed previews cannot infer completion. See
+[current completion and SLA rules](../docs/TV_TRACKER_2_5_3_RELEASE.md).
+
+Status, ETA, Out Time and SLA Expiration update on existing orders. Comments and
+Assignee are always blank in both production trackers, including new and absent orders.
+Raw preview history retains its original values. Free Site is recalculated for all tracker rows. Manual Searcher, Shift, Review/QC,
+Expense, Typer and other columns remain intact. Out Time uses an actual Completed Time
+when the tracker status is Completed and Delivered; dates are never fabricated.
+An explicit Out Time from a new preview is also accepted.
+
+SLA countdowns use the capture timestamp in IST. Partial absolute dates use that
+year. On Time includes equality with the SLA; late completion is Missing. Open orders
+stay unclassified. Ambiguous dates such as PAUSED remain in the local sync report for review.
+
+## Reliability and reporting
+
+SQLite stores local snapshots and sync job receipts. No external SQL database is used.
+An OS-released SQLite lock serializes sync processes. One atomic Google Sheets batch
+writes tracker values, raw history and reports. A local SQLite receipt records the
+pass after Google Sheets readback. The `Sheet1` Preview column proves whether a
+preview committed after a lost reply, so replaying it is a no-op. Pending snapshots sync in order after restart. Automatic retries
+are bounded; failures remain saved and appear in the dashboard for manual retry.
+The scheduler operates while the server is running, using Asia/Kolkata times.
+`indian_clock.py` reads time from an HTTPS response and advances it with a monotonic
+clock. The browser uses that same network anchor. Changing the PC clock or timezone
+does not change trigger times. Scheduled runs wait for the initial network time sync;
+a later connection failure keeps the established clock running until it can refresh.
+
+In Tracker report mode, daily/monthly API reports read the live tracker tabs. The dashboard never substitutes
+the latest raw preview for tracker totals if Google Sheets is unavailable. Changes
+compares selected local snapshots by Order Number. Local SQLite stores pass
+reports, changes and ambiguous rows. Google Sheets has no numbered preview or audit tabs.
+
+Exports are named `Production_data.xlsx`. The main Export button exports the eight selected-source report tabs, and each Daily Orders, Monthly Orders and PR Excel page also offers a single-tab download. The legacy full-workbook API still supports shortening long tracker names.
+`status_colors.json` holds the exact matching colors from the sample workbook.
+Google Sheets conditional rules color full rows and respond to manual status edits.
+Free Site cells inherit the row status color. Status Report and Excel exports
+use the same palette.
+Daily and monthly charts show labeled values for three periods with Earlier/Later navigation.
+
+To initialize or resume a migration explicitly, run `gsheet_dashboard/migrate_trackers.py`.
+Keep the `previews` directory on persistent storage for locally saved, unsynced captures.
+Committed previews can be recovered from Google Sheets after loss of local storage.
+
+## Regression checks
+
+From `gsheet_dashboard`, run `python -m unittest test_tracker_v2 test_october_updates` and
+`npm --prefix frontend run build`. Legacy tests which assert that missing orders are
+automatically completed describe the superseded behavior; the v2 regression suite
+tests preservation, status rules, SLA boundaries and atomic/idempotent history writes.
+
+To reapply the column cleanup and recalculate current tracker SLA values, run
+`gsheet_dashboard/refresh_production_trackers.py`. It saves a backup under `previews`,
+keeps row order and raw history, and refreshes the cached reports. Blank Out Time
+keeps Free Site blank; a missing or ambiguous deadline needs review before classification.
+
+The removed Google Sheet preview and audit tabs are backed up under `previews` as
+`removed-cloud-tabs-*.json.gz`. Run `remove_cloud_audit_tabs.py` to repeat the
+backup and cleanup if those tabs appear again. The local preview database and raw
+`Sheet1` history support comparisons without numbered cloud tabs.
+
+## Replacing imported report files
+
+- Import files accepts repeated uploads. The same filename replaces that workbook; other saved files remain. Every occurrence of an Order Number in that workbook is retained separately.
+- Remove file recomputes reports from the remaining workbooks. Remove all files leaves an empty Excel report. Select Replace all saved files when uploading a complete replacement batch.
+- Imported reports include every status in Daily Orders and Status Report. Monthly Orders ends at SLA on Missing; PR Excel contains capacity and production totals. Tracker reports retain the tracker summaries.
+- Imports save locally before publishing. Sync to Sheets or Publish current report retries a pending publication without re-importing.
+- Workbook access for reports does not depend on a deleted initial worksheet (gid=0). Direct worksheet operations still require an existing worksheet ID or title.
+
+## Report and queue fixes
+
+Report edits save immediately and Google Sheets publication runs in the background. You can remove imported files during a capture or Sheets update. Removing the last file leaves an empty Excel report; select Tracker report explicitly to return to trackers.
+
+Daily Status Report adds chronological dates, a Total row, SLA On Time and SLA Missing. Excel reports include every imported date, including earlier months, in Daily Status Report and daily capacity. Seven report tabs are visible. Blank rows in Status Report are uncolored and percentages are formatted for readability.
+
+Full Search and Remaining Search preserve the corresponding uploaded workbook's orders across all dates, including other products within that workbook. Each detail tab has sequential No values. Shared Order Numbers can appear in both source reports; overall dashboard and status totals count each order once, using the latest uploaded values.
+
+Queue extraction uses the installed Chrome or Edge on Windows. DATATRACE_HEADLESS=false opens a visible browser for login and extraction. Pagination checks the portal's record and page totals before saving a capture. Install its Node dependencies with npm install in gsheet_dashboard. Source changes invalidate old report requests and cached dashboard data.
+
+Cancel extraction stops the running extractor and its browser. It preserves existing captures and imported reports; a capture already saved locally remains available for sync. Live progress reports login, paging and local saving. An empty new tracker worksheet is initialized during its first sync. Failed cloud syncs retain the local preview and offer Retry sync. Dashboard reads reconnect after a temporary server interruption.
+
+The Google Sheets Daily Orders tab is retired and removed during report publication, with a local recovery copy in backups/reports. Date selections refresh All Products, highlight the matching Daily Status Report row in blue, clear the previous highlight, and filter All Products to the chosen day. All available dates remain in Daily Status Report; date clicks leave the other report tab values intact.
