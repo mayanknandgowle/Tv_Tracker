@@ -6,7 +6,7 @@ const {spawn, execFile} = require('node:child_process');
 const {createVault, publicSettings, validateSettings, validateServiceAccount, validateUiPreferences, allowedExternal} = require('./settings.cjs');
 const {createUpdater, scheduleUpdateChecks} = require('./updater.cjs');
 
-const appId = require('./package.json').build.appId;
+const appId = 'com.mayanknandgowle.tvtracker';
 app.setName('Tv Tracker Workspace');
 app.setAppUserModelId(appId);
 app.setPath('userData', process.env.DATATRACE_TEST_USER_DATA || path.join(app.getPath('appData'), 'Tv Tracker Workspace'));

@@ -1,6 +1,5 @@
 // Main-process-only updater. Stable releases follow GitHub's Latest designation.
-const {provider, owner, repo} = require('./package.json').build.publish[0];
-const PRODUCTION_UPDATE_FEED=Object.freeze({provider,owner,repo,private:false});
+const PRODUCTION_UPDATE_FEED=Object.freeze({provider:'github',owner:'mayanknandgowle',repo:'Tv_Tracker',private:false});
 function createUpdater({updater, enabled, version, notify = () => {}, prepareInstall, recoverInstall = async () => {}}) {
   let state = {status: enabled ? 'idle' : 'unsupported', currentVersion: version, version: '', percent: 0, lastChecked: null, message: enabled ? 'Check for a new Windows release.' : 'Updates are available in the installed Windows app.'};
   let operation = false;
