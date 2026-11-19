@@ -140,6 +140,11 @@ jobs:
         run: |
           $version = (Get-Content desktop/package.json | ConvertFrom-Json).version
           $folder = "release/$version"
+          $tag = "refs/tags/v$version"
+          $refs = @(git ls-remote origin $tag "${tag}^{}")
+          if ($LASTEXITCODE -ne 0 -or $refs.Count -eq 0) { throw 'Cannot verify the release tag on GitHub.' }
+          $target = ($refs[-1] -split '\s+', 2)[0]
+          if ($target -ne $env:GITHUB_SHA) { throw 'The release tag no longer points to this validated build.' }
           $assets = @("$folder/Tv-Tracker-$version-x64.exe", "$folder/Tv-Tracker-$version-x64.exe.blockmap", "$folder/latest.yml", "$folder/Tv-Tracker-$version-x64.zip", "$folder/Tv-Tracker-$version-source.zip", "$folder/SHA256SUMS.txt")
           $installer = "$folder/Tv-Tracker-$version-x64.exe"
           $signature = Get-AuthenticodeSignature -LiteralPath $installer
